@@ -1,0 +1,120 @@
+### 对于非模式生物创建注释 ###
+##使用ARCHR进行单细胞ATAC分析，RM06092A
+setwd("/sdc/xujiahao/tai_hou/ATAC")
+library(ArchR)
+#创建所需的基因组注释
+BiocManager::install("RMariaDB")
+library("RMariaDB")
+library("org.Mmu.eg.db")
+genomeAnnotation <-createGenomeAnnotation(genome = "BSgenome.Mmulatta.UCSC.rheMac10")
+txdb <- makeTxDbFromEnsembl(organism = "Macaca mulatta")
+seqlevels(txdb) <- paste0("chr", seqlevels(txdb))
+seqlevels(txdb) <- paste0("chr", c(seq(1,20), "X", "Y"))
+geneAnnotation <- createGeneAnnotation(TxDb = txdb,OrgDb = org.Mmu.eg.db)
+
+library(dplyr)
+library("biomaRt")
+
+### 去除NA ###
+gid <- geneAnnotation$genes$gene_id[-loci]
+gid<-x$genes$gene_id
+df <- select(txdb,keys = gid,columns = "TXNAME",keytype = "GENEID")
+genes <- geneAnnotation$genes[-loci]
+genes<-x$genes
+exons <- geneAnnotation$exons[-grep("NA", geneAnnotation$exons$symbol)]
+exons<-x$exons
+tss <- geneAnnotation$TSS[which(x$TSS$tx_name %in% df$TXNAME)]
+geneAnnotationSubset <- createGeneAnnotation(genes = genes, exons = exons, TSS = tss)
+
+###单细胞ATAC分析###
+addArchRThreads(threads = 4)
+nputFiles <- list.files(pattern = 'gz')
+inputFiles_2<-list.files(pattern = "tbi")
+inputFiles<-inputFiles[!(inputFiles %in% inputFiles_2)]
+
+k=0
+k1=0
+name<-c()
+for (i in inputFiles) {
+  k1=k1+1
+  k=k+1
+  print (i)
+  print(k)
+  x <- as.character(i)
+  x<-strsplit(x,"_")
+  y<-x[[1]][1]
+  x<-paste(y,"_",sep = "")
+  print(x)
+  print(y)
+  name<-c(name,c(y))
+}
+
+inputFiles<-"RM06050B_atac_fragments.tsv.gz"
+ArrowFiles<- createArrowFiles(
+  inputFiles = inputFiles,
+  sampleNames = name,
+  minTSS = 0, #Dont set this too high because you can always increase later
+  minFrags = 0, 
+  addTileMat = TRUE,
+  addGeneScoreMat = TRUE,  
+  geneAnnotation = getGeneAnnotation(archr), 
+  genomeAnnotation = getGenomeAnnotation(archr)
+)
+
+archr_RM06050B <- addDoubletScores(
+  input = archr_RM06050B,
+  k = 10, #Refers to how many cells near a "pseudo-doublet" to count.
+  knnMethod = "UMAP", #Refers to the embedding to use for nearest neighbor search.
+  LSIMethod = 1
+)
+
+archr_RM06050B <- ArchRProject(
+  ArrowFiles = ArrowFiles, 
+  outputDirectory = "/sdf/xujiahao/final_tai_hou/archr_proj/",
+  genomeAnnotation = genomeAnnotation,
+  geneAnnotation = geneAnnotationSubset,
+  copyArrows = TRUE #This is recommened so that you maintain an unaltered copy for later usage.
+)
+
+
+### 过滤细胞 ###
+idxPass <- which(archr_RM$Sample %in% c("RM06092A","RM06092B"))
+cellsPass <- rownames(seurat_RM06050B@meta.data)
+cellsPass<-gsub("_","#",cellsPass)
+archr_RM06050B<-archr_RM06050B[cellsPass, ]
+
+
+###降维###
+archr_RM06050B <- addIterativeLSI(
+  ArchRProj = archr_RM06050B,
+  useMatrix = "TileMatrix", 
+  name = "IterativeLSI", 
+  iterations = 2, 
+  LSIMethod = 1,
+  clusterParams = list( #See Seurat::FindClusters
+    resolution = c(0.2), 
+    sampleCells = 19000, 
+    n.start = 10
+  ), 
+  varFeatures = 40000, 
+  dimsToUse = 2:50,force = T
+
+)
+
+
+archr_RM06050B <- addUMAP(
+  ArchRProj = archr_RM06050B, 
+  reducedDims = "IterativeLSI", 
+  name = "UMAP", 
+  nNeighbors = 50, 
+  minDist = 0.6, 
+  metric = "cosine",
+  dimsToUse = 2:40,force = T
+)
+
+plotEmbedding(ArchRProj = archr_RM06050B, colorBy = "cellColData", name = "DoubletEnrichment", embedding = "UMAP")
+plotEmbedding(ArchRProj = archr_RM06050B, colorBy = "cellColData", name = "Clusters", embedding = "UMAP")
+archr_RM06050B<- addImputeWeights(archr_RM06050B,sampleCells = 19000,dimsToUse = 2:40)
+
+
+
